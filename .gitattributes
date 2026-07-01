@@ -1,0 +1,3 @@
+# Normalize line endings: LF in the repo, auto-converted on checkout.
+* text=auto eol=lf
+*.py text eol=lf

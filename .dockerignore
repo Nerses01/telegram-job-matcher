@@ -1,0 +1,11 @@
+.env
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc
+temp_*.txt
+tests/
+.git/
+.gitignore
+*.md
