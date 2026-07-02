@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    container_name: telegram-job-matcher
+    env_file: .env            # reads your local secrets at run time (never baked into the image)
+    restart: unless-stopped   # auto-restarts on crash and on Docker/host startup
+    volumes:
+      - tg_data:/data         # SQLite DB persists across rebuilds/restarts
+
+volumes:
+  tg_data:
+    name: tg_agent_data
