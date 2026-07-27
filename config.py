@@ -65,6 +65,38 @@ GROQ_TEMPERATURE = 0.1
 MAX_CV_BYTES = 512 * 1024  # 512 KiB is a generous ceiling for text/LaTeX CVs
 ALLOWED_CV_EXTENSIONS = (".txt", ".tex", ".md")
 
+# --- Work mode filter ------------------------------------------------------
+DEFAULT_WORK_MODE = "any"  # preserves pre-filter behavior for existing users
+WORK_MODE_PREFS = ("any", "remote", "office", "hybrid")      # user-selectable
+WORK_MODES_DETECTED = ("remote", "office", "hybrid", "unknown")  # AI-returnable
+
+# Hard gate: preference -> the detected modes allowed through. "unknown" is in
+# every set on purpose — an undetectable work mode must still alert, so model
+# uncertainty degrades into "notify anyway" rather than silently dropping a job.
+# Strict by design: a hybrid post does NOT reach a remote-only seeker. Loosening
+# this is a one-line edit here, which is why the matrix lives in config.
+WORK_MODE_COMPATIBILITY = {
+    "any": {"remote", "office", "hybrid", "unknown"},
+    "remote": {"remote", "unknown"},
+    "office": {"office", "unknown"},
+    "hybrid": {"hybrid", "unknown"},
+}
+
+WORK_MODE_LABELS = {
+    "any": "🌐 Any",
+    "remote": "🏠 Remote",
+    "office": "🏢 On-site",
+    "hybrid": "🔀 Hybrid",
+    "unknown": "❓ Not specified",
+}
+
+# --- Skills filter ---------------------------------------------------------
+MAX_SKILLS = 40
+MAX_SKILL_LENGTH = 40
+SKILLS_PAGE_SIZE = 8              # skills per page in the /skills keyboard
+MAX_MATCHED_SKILLS_IN_ALERT = 8
+CV_CHARS_FOR_SKILL_EXTRACTION = 12000
+
 # --- Alerts ----------------------------------------------------------------
 PREVIEW_CHARS = 500  # how much of a matched post to include in the alert
 
