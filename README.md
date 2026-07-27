@@ -16,7 +16,7 @@
 
 ## ✨ What it does
 
-Scrolling dozens of Telegram job channels and re-reading the same reposts is tedious. This bot does it for you: it continuously scrapes the channels you subscribe to, hashes out duplicates, and asks **Groq's LLaMA 3.1** to score each new posting against *your* CV. You only get a message when the match clears the threshold you set.
+Scrolling dozens of Telegram job channels and re-reading the same reposts is tedious. This bot does it for you: it continuously scrapes the channels you subscribe to, hashes out duplicates, and asks **Groq's LLaMA 3.1** to score each new posting against *your* CV. You only get a message when the posting clears your threshold **and** passes your filters — so an on-site role never lands in your inbox if you only want remote.
 
 ```
 🎯 New Match Found! (87%)
@@ -24,7 +24,11 @@ Scrolling dozens of Telegram job channels and re-reading the same reposts is ted
 Reason: Strong overlap on Python, asyncio and PostgreSQL; the
 posting's "distributed systems" requirement matches your Kafka project.
 
+🏠 Remote
+🛠 Matches your skills: Python, asyncio, PostgreSQL
+
 🔗 View Original Post
+
 --- Preview ---
 We are hiring a Senior Backend Engineer (Remote) …
 ```
@@ -103,7 +107,19 @@ cp .env.example .env
 python main.py
 ```
 
-Then open your bot in Telegram and send `/start`.
+### 4. Set yourself up in Telegram
+
+Open your bot and run these once:
+
+| Step | Command | What happens |
+|---|---|---|
+| 1 | `/start` | Registers you |
+| 2 | `/cv` | Paste or upload your CV — your skills are extracted automatically |
+| 3 | `/skills` | Review what was found; remove noise, ⭐ star anything you *require* |
+| 4 | `/workmode` | Pick Remote / On-site / Hybrid (or leave it on Any) |
+| 5 | `/add_channel` | Add a public job channel — repeat for as many as you like |
+
+> **First pass is intentionally quiet.** A newly added channel's existing backlog is skipped so you don't get a burst of 20 alerts; you'll start receiving matches from the next post onward.
 
 ## 💬 Bot commands
 
@@ -145,26 +161,60 @@ python ai_engine.py   # score a sample CV/job (needs GROQ_API_KEY)
 
 ## 🐳 Docker
 
+Run it detached so no terminal has to stay open:
+
 ```bash
-docker build -t telegram-job-matcher .
-docker run --env-file .env -v tg_data:/data telegram-job-matcher
+docker compose up -d --build
 ```
 
-The SQLite database lives in the `/data` volume, so it survives restarts.
+That's it — the bot restarts automatically on crash and on boot (`restart: unless-stopped`).
+
+| Command | What it does |
+|---|---|
+| `docker compose logs -f` | Follow live logs (Ctrl+C stops watching, not the bot) |
+| `docker compose ps` | Check it's running |
+| `docker compose restart` | Apply changes to `.env` |
+| `docker compose down` | Stop it — **your database is kept** |
+
+The SQLite database lives in the `tg_agent_data` volume, so it survives rebuilds and restarts.
+
+> ⚠️ Never run `docker compose down -v` — the `-v` flag deletes the volume, and with it your CV, channels, and history.
+
+To back up the database:
+
+```bash
+docker run --rm -v tg_agent_data:/data -v "$(pwd)":/backup alpine \
+  cp /data/job_matcher.db /backup/job_matcher.backup.db
+```
+
+<details>
+<summary>Prefer plain Docker without Compose?</summary>
+
+```bash
+docker build -t telegram-job-matcher .
+docker run -d --env-file .env -v tg_agent_data:/data telegram-job-matcher
+```
+</details>
 
 ## 🗂️ Project structure
 
 ```
-├── main.py         # entry point: runs the bot + monitor loop concurrently
-├── bot.py          # aiogram handlers, FSM, inline keyboards
-├── scraper.py      # login-free t.me/s/ scraping (httpx + BeautifulSoup)
-├── ai_engine.py    # Groq client + match scoring/validation
-├── database.py     # aiosqlite persistence (users, subs, watermark, dedup)
-├── config.py       # tunables, validated secrets, shared helpers
-├── tests/          # pytest suite (unit + dedup regression tests)
+├── main.py             # entry point: bot + monitor loop, and the filter gates
+├── bot.py              # aiogram handlers, FSM, inline keyboards
+├── scraper.py          # login-free t.me/s/ scraping (httpx + BeautifulSoup)
+├── ai_engine.py        # Groq client: scoring, work-mode detection, skill extraction
+├── database.py         # aiosqlite persistence + idempotent schema migrations
+├── config.py           # tunables, validated secrets, work-mode matrix
+├── tests/              # pytest suite (unit, dedup + filter regressions, migration)
 ├── Dockerfile
+├── docker-compose.yml
 └── requirements.txt
 ```
+
+Every tunable — poll interval, thresholds, the work-mode compatibility matrix,
+skill limits, retry policy — lives in [`config.py`](config.py). Want hybrid roles
+to reach you when you've selected Remote? That's a one-line edit to
+`WORK_MODE_COMPATIBILITY`.
 
 ## 🛠️ Tech stack
 
