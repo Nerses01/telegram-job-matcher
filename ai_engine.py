@@ -39,9 +39,15 @@ name, a relocation offer, a visa requirement, or a timezone requirement. If the
 posting does not clearly state how the work is performed, you MUST answer
 "unknown". When in doubt, always answer "unknown".
 
+Score honestly. A posting built on a different technology stack than the
+candidate's is a WEAK match even when both are software roles. Do not inflate
+the score with generic overlap such as version control, Linux, or agile process.
+
 If the candidate provides a list of key skills, also return which of those
-skills the job posting genuinely requires. Copy those entries verbatim from the
-candidate's list. Return an empty list if none apply or no list was given.
+skills the job posting EXPLICITLY names (or names by an obvious abbreviation).
+Copy those entries verbatim from the candidate's list. Never include a skill
+merely because a role like this usually involves it — if the posting does not
+say it, leave it out. Return an empty list if none apply or no list was given.
 
 Output your evaluation strictly in JSON format:
 {

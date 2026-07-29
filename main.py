@@ -24,23 +24,64 @@ def _work_mode_allowed(pref: str, detected: str) -> bool:
     return detected in allowed
 
 
-def _must_have_satisfied(must_haves, matched_skills, post_text: str) -> bool:
-    """True if at least one must-have skill is present in the posting.
+_TOKEN_RE = re.compile(r"[a-z0-9+#]+")
 
-    Accepts either the AI's `matched_skills` or a literal word-boundary hit in
-    the raw post text. The union is deliberate: a single hallucinated omission
-    by an 8B model would otherwise silently delete a job the user demanded.
+
+def _post_variants(post_text: str) -> tuple[set, set]:
+    """Index a posting for skill lookup: (whole tokens, joinable runs).
+
+    Adjacent tokens are also joined so a posting saying "ci/cd" or "Node.js"
+    matches a skill stored as "CICD" or "Node.js". Matching is by equality
+    against these variants rather than substring search, which is what stops
+    "Java" from matching inside "JavaScript".
+    """
+    tokens = _TOKEN_RE.findall(post_text.casefold())
+    token_set = set(tokens)
+    variants = set(token_set)
+    for size in (2, 3):
+        for i in range(len(tokens) - size + 1):
+            variants.add("".join(tokens[i:i + size]))
+    return token_set, variants
+
+
+def _skill_in_post(skill: str, token_set: set, variants: set) -> bool:
+    """True if `skill` is genuinely named in the posting."""
+    lowered = skill.casefold()
+    compact = "".join(_TOKEN_RE.findall(lowered))
+    if not compact:
+        return False
+    if compact in variants:
+        return True
+    # Multi-word skills ("REST APIs"): every meaningful word must appear.
+    words = {w for w in _TOKEN_RE.findall(lowered) if len(w) >= 3}
+    return bool(words) and words <= token_set
+
+
+def _matching_skills(skills, post_text: str) -> list:
+    """Which of the user's skills the posting actually names.
+
+    Computed in code, not taken from the model: an 8B model asked which skills
+    a posting requires will happily infer "a software job probably uses Git and
+    Linux" and report skills the posting never mentions. That is fine for prose
+    but not for something users read as fact — or for gating alerts.
+    """
+    if not skills:
+        return []
+    token_set, variants = _post_variants(post_text)
+    return [s for s in skills if _skill_in_post(s, token_set, variants)]
+
+
+def _must_have_satisfied(must_haves, post_text: str) -> bool:
+    """True if at least one starred skill is actually named in the posting.
+
+    Deliberately does NOT consult the model's `matched_skills`: because the
+    model over-reports, trusting it here would let a hallucinated match defeat
+    the gate entirely. Must-haves are OR-ed, so a user who wants to cover
+    synonyms can star both "JavaScript" and "JS".
     """
     if not must_haves:
         return True
-
-    matched_lower = {s.casefold() for s in matched_skills or ()}
-    for skill in must_haves:
-        if skill.casefold() in matched_lower:
-            return True
-        if re.search(rf"(?<!\w){re.escape(skill)}(?!\w)", post_text, re.IGNORECASE):
-            return True
-    return False
+    return bool(_matching_skills(must_haves, post_text))
 
 
 def _format_alert(
@@ -85,7 +126,9 @@ async def _process_post(channel: str, post: dict, subscribers: list) -> None:
             pct = result.get("match_percentage", 0)
             # .get with defaults keeps older/mocked results working unchanged.
             work_mode = result.get("work_mode", "unknown")
-            matched = result.get("matched_skills", []) or []
+            # Verified against the posting text rather than taken from the
+            # model, which over-reports matches. See _matching_skills.
+            matched = _matching_skills(sub.skills, post_text)
 
             # Hard gates run before the threshold check purely so the logs name
             # the real reason a post was dropped.
@@ -96,7 +139,7 @@ async def _process_post(channel: str, post: dict, subscribers: list) -> None:
                 )
                 continue
 
-            if not _must_have_satisfied(sub.must_haves, matched, post_text):
+            if not _must_have_satisfied(sub.must_haves, post_text):
                 logger.info(
                     f"User {sub.user_id}: suppressed — none of the must-have "
                     f"skills {list(sub.must_haves)} present"

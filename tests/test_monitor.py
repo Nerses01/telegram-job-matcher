@@ -173,15 +173,20 @@ async def test_must_have_absent_suppresses(temp_db, monkeypatch):
     send.assert_not_called()
 
 
-async def test_must_have_in_matched_skills_alerts(temp_db, monkeypatch):
+async def test_ai_claim_alone_does_not_satisfy_must_have(temp_db, monkeypatch):
+    """The model over-reports matches, so its claim must not defeat the gate.
+
+    Here the AI insists "Rust" matched, but the posting never says it — the
+    alert must still be suppressed.
+    """
     await _ready_user(must_haves=["Rust"])
     fetch, _, send = _patch_pipeline(monkeypatch, _posts([100]), matched_skills=["Rust"])
     await main.run_monitor_pass()
 
-    fetch.return_value = _posts([100, 101])
+    fetch.return_value = _posts([100, 101])  # text is "post 101" — no Rust
     await main.run_monitor_pass()
 
-    assert send.call_count == 1
+    send.assert_not_called()
 
 
 async def test_must_have_found_in_post_text_alerts(temp_db, monkeypatch):
@@ -200,14 +205,81 @@ async def test_must_have_found_in_post_text_alerts(temp_db, monkeypatch):
 
 def test_must_have_satisfied_helper():
     # No must-haves configured -> always passes.
-    assert main._must_have_satisfied((), [], "anything")
-    # Case-insensitive match via the AI's list.
-    assert main._must_have_satisfied(("Rust",), ["rust"], "no mention")
-    # Word-boundary match in raw text.
-    assert main._must_have_satisfied(("Go",), [], "We use Go here")
-    # "Go" must not match inside "Google".
-    assert not main._must_have_satisfied(("Go",), [], "We use Google here")
-    assert not main._must_have_satisfied(("Rust",), [], "Python only")
+    assert main._must_have_satisfied((), "anything")
+    # Present in the posting, case-insensitively.
+    assert main._must_have_satisfied(("Rust",), "We need a Rust engineer")
+    assert main._must_have_satisfied(("Go",), "We use Go here")
+    # Absent -> suppressed.
+    assert not main._must_have_satisfied(("Rust",), "Python only")
+    # Must not match inside a longer word.
+    assert not main._must_have_satisfied(("Go",), "We use Google here")
+    assert not main._must_have_satisfied(("Java",), "We use JavaScript here")
+    # OR across must-haves lets a user cover synonyms.
+    assert main._must_have_satisfied(("JavaScript", "JS"), "Strong JS skills")
+
+
+# --- Skill verification against the posting ---------------------------------
+
+def test_matching_skills_only_returns_skills_present_in_post():
+    """Regression: the model claimed Git/Linux/Jira for a post that named none.
+
+    Real case — a C++ candidate was shown "Algorithmic Optimization, STL,
+    CMake, Ninja, GDB, MSVC" as matches for a Java/Kotlin/React job.
+    """
+    skills = [
+        "Python", "Algorithmic Optimization", "REST APIs", "STL",
+        "CMake", "Ninja", "GDB", "MSVC", "Git", "Linux", "Jira", "CICD",
+    ]
+    post = (
+        "Full Stack Software Engineer | Senior\n"
+        "Skills: agile, ci/cd, java, kotlin, python, react, typescript, unit_testing"
+    )
+    matched = main._matching_skills(skills, post)
+
+    assert "Python" in matched          # genuinely listed
+    assert "CICD" in matched            # "ci/cd" joins to "cicd"
+    for invented in ("STL", "CMake", "Ninja", "GDB", "MSVC", "Git", "Linux",
+                     "Jira", "Algorithmic Optimization", "REST APIs"):
+        assert invented not in matched, invented
+
+
+def test_matching_skills_handles_separators_and_word_boundaries():
+    assert main._matching_skills(["Node.js"], "We use Node JS daily") == ["Node.js"]
+    assert main._matching_skills(["C++20"], "Modern C++20 codebase") == ["C++20"]
+    assert main._matching_skills(["REST APIs"], "Build REST APIs") == ["REST APIs"]
+    # Substring traps must not match.
+    assert main._matching_skills(["Java"], "JavaScript developer") == []
+    assert main._matching_skills(["OOP"], "an infinite loop") == []
+    assert main._matching_skills(["Go"], "Google Cloud") == []
+
+
+def test_matching_skills_empty_inputs():
+    assert main._matching_skills([], "anything") == []
+    assert main._matching_skills(["Python"], "") == []
+
+
+async def test_alert_shows_only_verified_skills(temp_db, monkeypatch):
+    """End-to-end: the alert must not repeat the model's invented matches."""
+    uid = await _ready_user(work_mode="remote")
+    await database.add_user_skills(uid, ["Python", "CMake", "Qt6"])
+
+    fetch, _, send = _patch_pipeline(
+        monkeypatch, _posts([100]), work_mode="remote",
+        matched_skills=["Python", "CMake", "Qt6"],  # model over-claims
+    )
+    await main.run_monitor_pass()
+
+    fetch.return_value = [{
+        "text": "Backend role. Skills: python, django, postgres",
+        "url": "https://t.me/chan/101", "post_id": 101,
+    }]
+    await main.run_monitor_pass()
+
+    assert send.call_count == 1
+    body = send.call_args[0][1]
+    assert "Python" in body
+    assert "CMake" not in body
+    assert "Qt6" not in body
 
 
 def test_format_alert_shows_work_mode_and_skills():
