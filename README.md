@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![aiogram](https://img.shields.io/badge/aiogram-3.x-1DA1F2.svg)](https://docs.aiogram.dev/)
-[![Groq](https://img.shields.io/badge/Groq-LLaMA%203.1-F55036.svg)](https://groq.com/)
+[![Groq](https://img.shields.io/badge/Groq-Qwen%203.8-F55036.svg)](https://groq.com/)
 [![Tests](https://img.shields.io/badge/tests-86%20passing-brightgreen.svg)](#-testing)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -16,7 +16,7 @@
 
 ## ✨ What it does
 
-Scrolling dozens of Telegram job channels and re-reading the same reposts is tedious. This bot does it for you: it continuously scrapes the channels you subscribe to, hashes out duplicates, and asks **Groq's LLaMA 3.1** to score each new posting against *your* CV. You only get a message when the posting clears your threshold **and** passes your filters — so an on-site role never lands in your inbox if you only want remote.
+Scrolling dozens of Telegram job channels and re-reading the same reposts is tedious. This bot does it for you: it continuously scrapes the channels you subscribe to, hashes out duplicates, and asks **an LLM on Groq** to score each new posting against *your* CV. You only get a message when the posting clears your threshold **and** passes your filters — so an on-site role never lands in your inbox if you only want remote.
 
 ```
 🎯 New Match Found! (87%)
@@ -40,7 +40,7 @@ flowchart LR
     A["Public Telegram<br/>job channels"] -->|scrape t.me/s/| B[Scraper]
     B --> C{"New post?<br/>(per-channel<br/>watermark)"}
     C -- no --> S[Skip]
-    C -- yes --> D["Groq LLaMA 3.1<br/>score + work mode<br/>+ skill match"]
+    C -- yes --> D["Groq LLM<br/>score + work mode<br/>+ skill match"]
     D --> F{"Work mode<br/>you want?"}
     F -- no --> S
     F -- "yes / unspecified" --> G{"Must-have<br/>skills present?"}
@@ -60,7 +60,7 @@ A background loop sweeps every subscribed channel on an interval. Newness is tra
 
 | | |
 |---|---|
-| 🤖 **AI matching** | Groq `llama-3.1-8b-instant` scores each posting 0–100 with a human-readable reason |
+| 🤖 **AI matching** | Groq (`qwen/qwen3.8-27b`) scores each posting 0–100 with a human-readable reason |
 | 🏠 **Work-mode filter** | Want remote only? On-site jobs never reach you — no matter how well they score |
 | 🛠️ **Skills filter** | Skills are auto-extracted from your CV, then fully editable. Star any as ⭐ must-have to require them |
 | 📄 **Flexible CV input** | Paste text/LaTeX or upload a `.txt` / `.tex` / `.md` file (validated, never written to disk) |
@@ -218,7 +218,7 @@ to reach you when you've selected Remote? That's a one-line edit to
 
 ## 🛠️ Tech stack
 
-`Python` · `aiogram 3` · `asyncio` · `aiosqlite` · `httpx` · `BeautifulSoup` · `Groq (LLaMA 3.1)`
+`Python` · `aiogram 3` · `asyncio` · `aiosqlite` · `httpx` · `BeautifulSoup` · `Groq (Qwen 3.8)`
 
 ## 📄 License
 

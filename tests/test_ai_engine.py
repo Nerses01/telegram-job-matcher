@@ -168,3 +168,70 @@ async def test_extract_skills_api_error(monkeypatch):
 
 async def test_extract_skills_empty_cv():
     assert await ai_engine.extract_skills_from_cv("   ") == []
+
+
+# --- Rate limits -------------------------------------------------------------
+
+import httpx
+from groq import RateLimitError
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_pause(monkeypatch):
+    monkeypatch.setattr(ai_engine, "_blocked_until", 0.0)
+
+
+def _rate_limit(message, headers=None):
+    request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    response = httpx.Response(429, headers=headers or {}, request=request)
+    return RateLimitError(message, response=response, body=None)
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Please try again in 7m12.5s.", 432.5),
+    ("Please try again in 1h2m3s.", 3723.0),
+    ("Please try again in 1.5s.", 1.5),
+    ("Please try again in 640ms.", 0.64),
+    ("no hint at all", None),
+])
+def test_retry_after_from_message(text, expected):
+    wait = ai_engine._retry_after_seconds(_rate_limit(text))
+    assert wait == pytest.approx(expected) if expected is not None else wait is None
+
+
+def test_retry_after_header_wins():
+    error = _rate_limit("Please try again in 7m0s.", headers={"retry-after": "12"})
+    assert ai_engine._retry_after_seconds(error) == 12.0
+
+
+async def test_daily_quota_pauses_calls_instead_of_retrying(monkeypatch):
+    """Regression: a spent daily quota was retried 3x per post, then every post
+    was recorded as a 0% match. Now it fails once, marked as a failure, and
+    later calls skip the API until the quota resets."""
+    create = AsyncMock(side_effect=_rate_limit(
+        "Rate limit reached ... tokens per day (TPD) ... Please try again in 7m12.5s."
+    ))
+    monkeypatch.setattr(ai_engine.client.chat.completions, "create", create)
+    sleep = AsyncMock()
+    monkeypatch.setattr(ai_engine.asyncio, "sleep", sleep)
+
+    first = await ai_engine.evaluate_job_match("cv", "job")
+    second = await ai_engine.evaluate_job_match("cv", "job")
+
+    assert first["failed"] and second["failed"]
+    assert create.await_count == 1
+    sleep.assert_not_awaited()
+
+
+async def test_short_rate_limit_is_retried(monkeypatch):
+    create = AsyncMock(side_effect=[
+        _rate_limit("tokens per minute (TPM) ... Please try again in 640ms."),
+        _FakeResponse('{"match_percentage": 70, "reason": "ok"}'),
+    ])
+    monkeypatch.setattr(ai_engine.client.chat.completions, "create", create)
+    monkeypatch.setattr(ai_engine.asyncio, "sleep", AsyncMock())
+
+    result = await ai_engine.evaluate_job_match("cv", "job")
+
+    assert result["match_percentage"] == 70
+    assert "failed" not in result

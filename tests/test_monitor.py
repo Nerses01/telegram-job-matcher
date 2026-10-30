@@ -312,3 +312,47 @@ async def test_below_threshold_no_alert(temp_db, monkeypatch):
     send.assert_not_called()
     # Watermark still advances past the offered post.
     assert await database.get_channel_state("chan") == (101, 1)
+
+
+async def test_ai_failure_holds_posts_instead_of_scoring_zero(temp_db, monkeypatch):
+    """Regression: when Groq's quota ran out, each post got a fake 0% score, was
+    marked seen and the watermark moved past it, so it was never scored."""
+    await _ready_user()
+    fetch, evaluate, send = _patch_pipeline(monkeypatch, _posts([100]))
+    await main.run_monitor_pass()  # bootstrap
+
+    good = dict(evaluate.return_value)
+    failed = {"match_percentage": 0, "reason": "API Error", "work_mode": "unknown",
+              "matched_skills": [], "failed": True}
+    # Post 101 scores, then the quota runs out on 102.
+    evaluate.side_effect = [good, failed]
+    fetch.return_value = _posts([100, 101, 102, 103])
+    await main.run_monitor_pass()
+
+    assert send.call_count == 1
+    assert await database.get_channel_state("chan") == (101, 1)
+    assert not await database.has_seen_post("post 102")
+
+    # Quota is back: the held posts are scored and alerted, 101 is not repeated.
+    evaluate.side_effect = None
+    evaluate.return_value = good
+    await main.run_monitor_pass()
+
+    assert send.call_count == 3
+    assert await database.get_channel_state("chan") == (103, 1)
+
+
+async def test_ai_failure_for_one_subscriber_alerts_nobody(temp_db, monkeypatch):
+    """Score everyone before alerting, so retrying a held post can't double-alert."""
+    await _ready_user(uid=1)
+    await _ready_user(uid=2)
+    fetch, evaluate, send = _patch_pipeline(monkeypatch, _posts([100]))
+    await main.run_monitor_pass()
+
+    good = dict(evaluate.return_value)
+    evaluate.side_effect = [good, {"match_percentage": 0, "failed": True}]
+    fetch.return_value = _posts([100, 101])
+    await main.run_monitor_pass()
+
+    send.assert_not_called()
+    assert await database.get_channel_state("chan") == (100, 1)

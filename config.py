@@ -58,7 +58,9 @@ USER_AGENT = (
 )
 
 # --- Groq / AI -------------------------------------------------------------
-GROQ_MODEL = "llama-3.1-8b-instant"
+# Groq retired llama-3.1-8b-instant (404 model_not_found). Check what the key
+# can use with client.models.list() before changing this.
+GROQ_MODEL = "qwen/qwen3.8-27b"
 GROQ_TEMPERATURE = 0.1
 
 # --- CV upload -------------------------------------------------------------
@@ -103,6 +105,10 @@ PREVIEW_CHARS = 500  # how much of a matched post to include in the alert
 # --- Networking retries ----------------------------------------------------
 RETRY_ATTEMPTS = 3
 RETRY_BASE_DELAY = 1.0  # seconds; grows exponentially per attempt
+# A Groq rate limit asking us to wait longer than this (e.g. the daily token
+# quota, which resets over hours) is not retried: AI calls pause until the
+# reset instead, and unscored posts are held for a later pass.
+RATE_LIMIT_MAX_WAIT_SECONDS = 60
 
 
 def setup_logging(level: int = logging.INFO) -> None:

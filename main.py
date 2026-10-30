@@ -113,16 +113,32 @@ def _format_alert(
     )
 
 
-async def _process_post(channel: str, post: dict, subscribers: list) -> None:
+async def _process_post(channel: str, post: dict, subscribers: list) -> bool:
     """Score one post against every CV-bearing subscriber and alert on matches.
-    Failures are isolated per subscriber so one bad send never drops the rest."""
+
+    Returns False, without alerting anyone or marking the post seen, if the AI
+    could not score it for some subscriber (e.g. Groq quota spent), so the
+    caller can retry it on a later pass. Every subscriber is scored before any
+    alert is sent, so that retry can never double-alert. Other failures are
+    isolated per subscriber so one bad send never drops the rest.
+    """
     post_text = post["text"]
+    scored = []
     for sub in subscribers:
         try:
             result = await evaluate_job_match(
                 sub.cv_text, post_text,
                 skills=sub.skills, must_haves=sub.must_haves,
             )
+        except Exception as e:
+            logger.error(f"Failed scoring post for user {sub.user_id} in {channel}: {e}")
+            continue
+        if result.get("failed"):
+            return False
+        scored.append((sub, result))
+
+    for sub, result in scored:
+        try:
             pct = result.get("match_percentage", 0)
             # .get with defaults keeps older/mocked results working unchanged.
             work_mode = result.get("work_mode", "unknown")
@@ -162,6 +178,7 @@ async def _process_post(channel: str, post: dict, subscribers: list) -> None:
         except Exception as e:
             logger.error(f"Failed processing post for user {sub.user_id} in {channel}: {e}")
     await db.mark_post_seen(post_text)
+    return True
 
 
 async def process_channel(channel: str) -> None:
@@ -192,13 +209,23 @@ async def process_channel(channel: str) -> None:
         logger.info(f"{channel}: holding {len(new_posts)} new posts (no CV-bearing subscribers)")
         return
 
+    done_id = last_id
     for post in new_posts:
-        if await db.has_seen_post(post["text"]):
-            continue
-        await _process_post(channel, post, subscribers)
+        if not await db.has_seen_post(post["text"]):
+            if not await _process_post(channel, post, subscribers):
+                # AI unavailable: hold this post and everything after it for
+                # the next pass instead of recording it as a 0% match.
+                logger.warning(
+                    f"{channel}: AI unavailable, holding "
+                    f"{sum(p['post_id'] >= post['post_id'] for p in new_posts)} "
+                    "posts for a later pass"
+                )
+                break
+        done_id = post["post_id"]
 
-    # Advance the watermark only after offering posts to real subscribers.
-    await db.set_channel_watermark(channel, max_id, bootstrapped=1)
+    # Advance the watermark only past posts actually offered to subscribers.
+    if done_id > last_id:
+        await db.set_channel_watermark(channel, done_id, bootstrapped=1)
 
 
 async def run_monitor_pass() -> None:

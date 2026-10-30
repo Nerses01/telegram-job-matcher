@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-A Telegram bot that autonomously monitors public Telegram job channels, deduplicates posts, and uses Groq (LLaMA 3.1) to score each post against a user's CV. Users are alerted only when a match meets their configured percentage threshold. Async throughout (`asyncio`, `aiogram` v3, `aiosqlite`, `httpx`).
+A Telegram bot that autonomously monitors public Telegram job channels, deduplicates posts, and uses Groq (`config.GROQ_MODEL`, currently Qwen 3.8 27B) to score each post against a user's CV. Users are alerted only when a match meets their configured percentage threshold. Async throughout (`asyncio`, `aiogram` v3, `aiosqlite`, `httpx`).
 
 ## Commands
 
@@ -44,6 +44,7 @@ Module responsibilities:
   - **First sight of a channel** (`bootstrapped = 0`): record the watermark at the current max id and **alert nothing** — this is the "skip existing posts on subscribe" behavior. The first pass after deploy is a one-time quiet pass per channel.
   - **No CV-bearing subscriber this pass:** hold the new posts (do **not** advance the watermark) so they get scored once a CV is added — this closes the "CV uploaded late" gap.
   - Only advance `last_post_id` after posts are offered to ≥1 CV-bearing subscriber.
+  - **AI failure is not a 0% score.** `evaluate_job_match` marks API failures with `"failed": True`; `_process_post` scores every subscriber before alerting anyone and returns `False` on a failure, and `process_channel` then stops and advances the watermark only to the last fully scored post. When Groq asks for a wait longer than `RATE_LIMIT_MAX_WAIT_SECONDS` (e.g. the daily token quota), `ai_engine` pauses all calls until then rather than retrying.
   - `processed_posts` is now secondary — exact-repost suppression only, checked via `has_seen_post()` / `mark_post_seen()` (the old check-and-insert `is_post_new` was removed).
 - **Filters run in `main._process_post`, after scoring, before the threshold check** (so logs name the real reason a post was dropped):
   - **Work mode is a hard gate.** `config.WORK_MODE_COMPATIBILITY` maps a user's preference to the detected modes allowed through. It is **strict** — a `hybrid` post does not reach a `remote`-only user. `"unknown"` is in *every* set on purpose: a post whose work mode can't be determined must still alert, so model uncertainty degrades into "notify anyway" rather than silently deleting a job. The AI prompt is correspondingly biased toward answering `unknown`. An unrecognized preference **fails open**.

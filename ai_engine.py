@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import re
+import time
 
 from groq import (
     AsyncGroq,
@@ -77,12 +79,45 @@ Output strictly in JSON format:
 """
 
 
+# time.monotonic() before which Groq is known to be rate limited (e.g. the daily
+# token quota is spent). Calls before then fail fast without touching the API.
+_blocked_until = 0.0
+
+_RETRY_IN_RE = re.compile(
+    r"try again in (?:(\d+)h)?(?:(\d+)m(?!s))?(?:([\d.]+)s)?(?:([\d.]+)ms)?"
+)
+
+
+def _retry_after_seconds(error) -> float | None:
+    """How long a RateLimitError asks us to wait, or None if it doesn't say.
+
+    Prefers the `retry-after` header; falls back to Groq's message text
+    ("Please try again in 7m12.5s").
+    """
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        try:
+            return float(headers.get("retry-after"))
+        except (TypeError, ValueError):
+            pass
+    match = _RETRY_IN_RE.search(str(error))
+    if not match or not any(match.groups()):
+        return None
+    hours, minutes, seconds, millis = (float(g) if g else 0.0 for g in match.groups())
+    return hours * 3600 + minutes * 60 + seconds + millis / 1000
+
+
 async def _complete_json(system_prompt: str, user_prompt: str):
     """Run a JSON-mode completion with bounded exponential backoff.
 
     Returns (raw_json_text, error_message) — exactly one is not None.
     Never raises, so callers always have a defined fallback path.
     """
+    global _blocked_until
+    if time.monotonic() < _blocked_until:
+        return None, "API Error: rate limited until quota resets."
+
     last_error = None
     for attempt in range(config.RETRY_ATTEMPTS):
         try:
@@ -99,6 +134,19 @@ async def _complete_json(system_prompt: str, user_prompt: str):
         except _RETRYABLE as e:
             last_error = e
             delay = config.RETRY_BASE_DELAY * (2 ** attempt)
+            if isinstance(e, RateLimitError):
+                wait = _retry_after_seconds(e)
+                if wait is not None and wait > config.RATE_LIMIT_MAX_WAIT_SECONDS:
+                    # Retrying in seconds cannot outlast a quota that resets in
+                    # minutes or hours; pause all AI calls until then instead.
+                    _blocked_until = time.monotonic() + wait
+                    logger.warning(
+                        f"Groq rate limit needs a {wait:.0f}s wait; pausing AI "
+                        f"calls until then ({e!r})"
+                    )
+                    return None, "API Error: rate limited until quota resets."
+                if wait is not None:
+                    delay = max(delay, wait)
             logger.warning(
                 f"Groq attempt {attempt + 1}/{config.RETRY_ATTEMPTS} failed "
                 f"({e!r}); retrying in {delay:.1f}s"
@@ -186,12 +234,13 @@ async def evaluate_job_match(
     cv_text: str, job_post_text: str, skills=None, must_haves=None
 ) -> dict:
     """
-    Sends the CV and Job Post to Groq (LLaMA 3) to calculate a match percentage,
+    Sends the CV and Job Post to Groq to calculate a match percentage,
     classify the job's work mode, and report which curated skills it requires.
 
     Returns a dict with 'match_percentage' (int 0..100), 'reason' (str),
     'work_mode' (str) and 'matched_skills' (list).
-    Never raises: any hard failure yields a 0-score fallback.
+    Never raises: if the API call fails, the 0-score fallback also carries
+    'failed': True so callers can retry the post later, not treat it as scored.
     """
     # Only add the skills block when there is something to say, so users without
     # curated skills get a prompt byte-identical to the pre-filter behavior.
@@ -219,6 +268,7 @@ async def evaluate_job_match(
             "reason": error,
             "work_mode": "unknown",
             "matched_skills": [],
+            "failed": True,
         }
     return _parse_result(raw)
 
@@ -259,7 +309,7 @@ if __name__ == "__main__":
         test_cv = "I am a Backend Developer using C++ and Qt."
         test_job = "Looking for a Mid-Level C++ Engineer with QML experience. Fully remote."
 
-        print("Evaluating match via Groq LLaMA 3...")
+        print("Evaluating match via Groq...")
         result = await evaluate_job_match(test_cv, test_job, skills=["C++", "Qt"])
         print("Result:", result)
 
